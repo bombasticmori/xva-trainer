@@ -1330,7 +1330,7 @@ if __name__ == '__main__':
                     TRAINER.END_OF_TRAINING = False
                     TRAINER.JUST_FINISHED_STAGE = False
                     err_counter = 0
-                    print('HiFi-GAN training finished!')
+                    print('FastPitch training finished!')
                 elif TRAINER.JUST_FINISHED_STAGE:
                     TRAINER.print_and_log(TRAINER.training_log, "===== Finished pre-training...")
                     TRAINER.JUST_FINISHED_STAGE = False

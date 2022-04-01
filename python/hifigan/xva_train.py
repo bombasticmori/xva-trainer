@@ -684,7 +684,7 @@ if __name__ == '__main__':
                 if TRAINER.END_OF_TRAINING:
                     TRAINER.END_OF_TRAINING = False
                     del dataset_pairs[0]
-                    print('FastPitch training finished!')
+                    print('HiFi-GAN training finished!')
                 else:
                     print(str(e))
 
