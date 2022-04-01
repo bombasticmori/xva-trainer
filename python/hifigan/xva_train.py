@@ -156,18 +156,27 @@ class HiFiTrainer(object):
 
         self.JUST_FINISHED_STAGE = False
         self.END_OF_TRAINING = False
+        self.print_lr = True # for print_and_log Google Colab fix
 
 
     def print_and_log (self, line=None, end="\n", flush=False, save_to_file=False):
         if line is None:
-            print(f'\r{self.training_log_live_line}', end="", flush=True)
+            if self.print_lr:
+                print(f'{self.training_log_live_line}', end="", flush=True)
+            else:
+                print(f'\r{self.training_log_live_line}', end="", flush=True)
+            self.print_lr = False
         else:
             time_str = str(datetime.datetime.now().time())
             time_str = time_str.split(":")[0]+":"+time_str.split(":")[1]
             self.training_log.append(f'{time_str} | {line}')
-            print(("\r" if flush else "")+line, end=end, flush=flush)
-
-
+            if not self.print_lr:
+                print(f'\n{time_str} | {line}', flush=True)
+            else:
+                print(f'{time_str} | {line}', flush=True)
+            self.print_lr = True
+            
+            
         if save_to_file:
             with open(f'{save_to_file}/training.log', "w+") as f:
                 f.write("\n".join(self.training_log+[self.training_log_live_line]))
@@ -575,9 +584,11 @@ class HiFiTrainer(object):
                 # Clear old checkpoints
                 ckpts = sorted([fname for fname in os.listdir(self.dataset_output+"/hifi") if "do_" in fname], key=sort_ckpt)[:-2]
                 for ckpt in ckpts:
+                    open(f'{self.dataset_output}/hifi/{ckpt}', 'w').close() # don't move this giant file to the Google Drive trash
                     os.remove(f'{self.dataset_output}/hifi/{ckpt}')
                 ckpts = sorted([fname for fname in os.listdir(self.dataset_output+"/hifi") if "g_" in fname], key=sort_ckpt)[:-2]
                 for ckpt in ckpts:
+                    open(f'{self.dataset_output}/hifi/{ckpt}', 'w').close() # don't move this giant file to the Google Drive trash
                     os.remove(f'{self.dataset_output}/hifi/{ckpt}')
 
                 # Save the output file, for ease
@@ -633,19 +644,22 @@ class HiFiTrainer(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch FastPitch Training', allow_abbrev=False)
-    parser.add_argument('-gpus', type=str, default=f'0', help='CUDA devices')
+    parser.add_argument('--gpus', type=str, default=f'0', help='CUDA devices')
+    parser.add_argument('--datasets-root', type=str, default='/content/drive/MyDrive/xVATrainerDatasets', help='Datasets root folder')
+    parser.add_argument('--dataset-name', type=str, required=True, help='Dataset name')
+    parser.add_argument('--checkpoint', type=str, default='[male]', help='Checkpoint path')
+    parser.add_argument('--epochs-per-checkpoint', type=int, default=5, help='Epochs per checkpoint')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
     args, _ = parser.parse_known_args()
 
     gpus = [int(val) for val in args.gpus.split(",")]
-    print(f'gpus, {gpus}')
 
-
+    dataset_pairs = [
+        [args.dataset_name, args.checkpoint],
+    ]
+    
+    
     async def do_next_dataset_or_stage ():
-
-        dataset_pairs = []
-        dataset_pairs.append(["D:/FP_INPUT/...", "[male]"])
-        dataset_pairs.append(["D:/FP_INPUT/...", "[female]"])
-
         while len(dataset_pairs):
             torch.cuda.empty_cache()
 
@@ -654,11 +668,11 @@ if __name__ == '__main__':
             try:
                 init_data = {}
                 init_data["dataset_path"] = dataset_pairs[0][0]
-                init_data["output_path"] = f'D:/FP_OUTPUT/{dataset_pairs[0][0].split("/")[-1]}'
+                init_data["output_path"] = args.datasets_root #/{dataset_pairs[0][0].split("/")[-1]}'
                 init_data["hifigan_checkpoint"] = dataset_pairs[0][1]
                 init_data["num_workers"] = 4
-                init_data["batch_size"] = 32
-                init_data["epochs_per_checkpoint"] = 5
+                init_data["batch_size"] = args.batch_size
+                init_data["epochs_per_checkpoint"] = args.epochs_per_checkpoint
 
                 print("start training")
                 await TRAINER.start(init_data, gpus=gpus)
@@ -668,7 +682,9 @@ if __name__ == '__main__':
                 raise
             except RuntimeError as e:
                 print(str(e))
-
+                if TRAINER.END_OF_TRAINING:
+                    TRAINER.END_OF_TRAINING = False
+                    del dataset_pairs[0]
 
 
     import asyncio
