@@ -681,11 +681,12 @@ if __name__ == '__main__':
             except KeyboardInterrupt:
                 raise
             except RuntimeError as e:
-                print(str(e))
                 if TRAINER.END_OF_TRAINING:
                     TRAINER.END_OF_TRAINING = False
                     del dataset_pairs[0]
-
+                    print('FastPitch training finished!')
+                else:
+                    print(str(e))
 
     import asyncio
     try:
