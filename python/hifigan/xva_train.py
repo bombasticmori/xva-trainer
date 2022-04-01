@@ -687,6 +687,9 @@ if __name__ == '__main__':
                     print('HiFi-GAN training finished!')
                 else:
                     print(str(e))
+            except Exception as e:
+                import traceback
+                print("last traceback " + traceback.format_exc())
 
     import asyncio
     try:
