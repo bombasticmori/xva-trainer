@@ -686,9 +686,9 @@ if __name__ == '__main__':
                     del dataset_pairs[0]
                     print('HiFi-GAN training finished!')
                 else:
-                    print(str(e))
+                    import traceback
+                    print("last trak
             except Exception as e:
-                import traceback
                 print("last traceback " + traceback.format_exc())
 
     import asyncio
