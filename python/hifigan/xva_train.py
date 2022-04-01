@@ -687,7 +687,7 @@ if __name__ == '__main__':
                     print('HiFi-GAN training finished!')
                 else:
                     import traceback
-                    print("last trak
+                    print("last traceback " + traceback.format_exc())
             except Exception as e:
                 print("last traceback " + traceback.format_exc())
 
