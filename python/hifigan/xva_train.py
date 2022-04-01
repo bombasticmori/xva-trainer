@@ -664,6 +664,8 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
 
             TRAINER = HiFiTrainer(None, PROD=False, gpus=gpus, models_manager=None)
+            TRAINER.pretrained_ckpt_male = f'{args.datasets_root}/pretrained_models/male'
+            TRAINER.pretrained_ckpt_female = f'{args.datasets_root}/pretrained_models/female'
 
             try:
                 init_data = {}
