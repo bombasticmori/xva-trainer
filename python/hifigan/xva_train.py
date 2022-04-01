@@ -299,8 +299,8 @@ class HiFiTrainer(object):
         self.scheduler_g = torch.optim.lr_scheduler.ExponentialLR(self.optim_g, gamma=self.h.lr_decay, last_epoch=self.training_epoch)
         self.scheduler_d = torch.optim.lr_scheduler.ExponentialLR(self.optim_d, gamma=self.h.lr_decay, last_epoch=self.training_epoch)
 
-        input_training_file = f'{self.dataset_input}/metadata.csv'
-        input_wavs_dir = f'{self.dataset_input}/wavs'
+        input_training_file = f'{self.dataset_output}/metadata.csv'
+        input_wavs_dir = f'{self.dataset_output}/wavs'
 
         training_filelist, not_found, dm = get_dataset_filelist(input_training_file, input_wavs_dir)
         self.print_and_log(f'Training items: {int(len(training_filelist)/dm)} | Data multiplier: {dm} | Not found: {not_found} | Total: {len(training_filelist)}', save_to_file=self.dataset_output)
