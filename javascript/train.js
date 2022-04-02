@@ -417,7 +417,10 @@ window.updateTrainingGraphs = () => {
 
 const startTrackingFolder = (dataset_path, output_path) => {
     if (!Object.keys(window.training_state.dirs_watching).includes(output_path)) {
-        window.training_state.dirs_watching[output_path] = fs.watch(output_path, {recursive: false, persistent: true}, (eventType, fileName) => {
+        if (!fs.existsSync(output_path)) {
+            fs.mkdirSync(output_path)
+        }
+        const folderWatch = fs.watch(output_path, {recursive: false, persistent: true}, (eventType, fileName) => {
 
             if (window.training_state.currentlyViewedDataset==dataset_path && fileName=="training.log") {
                 window.updateTrainingLogText()
@@ -427,6 +430,7 @@ const startTrackingFolder = (dataset_path, output_path) => {
                 window.updateTrainingGraphs()
             }
         })
+        window.training_state.dirs_watching[output_path] = folderWatch
     }
 }
 
@@ -545,6 +549,7 @@ window.showConfigMenu = (startingData, di) => {
         "checkpoint": undefined,
         "hifigan_checkpoint": undefined,
 
+        "use_amp": "true",
         "num_workers": 4, // TODO, app-level default settings
         "batch_size": 8, // TODO, app-level default settings
         "epochs_per_checkpoint": 3, // TODO, app-level default settings
@@ -576,6 +581,7 @@ window.showConfigMenu = (startingData, di) => {
     trainingAddConfigWorkersInput.value = parseInt(configData.num_workers)
     trainingAddConfigBatchSizeInput.value = parseInt(configData.batch_size)
     trainingAddConfigEpochsPerCkptInput.value = parseInt(configData.epochs_per_checkpoint)
+    trainingAddConfigUseAmp.checked = configData.use_amp ? configData.use_amp=="true" : true
 
     queueItemConfigModalContainer.style.display = "flex"
 }
@@ -633,6 +639,7 @@ acceptConfig.addEventListener("click", () => {
                 "checkpoint": fp_ckpt.replaceAll(/\\/, "/"),
                 "hifigan_checkpoint": hg_ckpt.replaceAll(/\\/, "/"),
 
+                "use_amp": trainingAddConfigUseAmp.checked ? "true" : "false",
                 "num_workers": parseInt(trainingAddConfigWorkersInput.value),
                 "batch_size": parseInt(trainingAddConfigBatchSizeInput.value),
                 "epochs_per_checkpoint": parseInt(trainingAddConfigEpochsPerCkptInput.value),
@@ -653,6 +660,7 @@ acceptConfig.addEventListener("click", () => {
                 "checkpoint": fp_ckpt.replaceAll(/\\/, "/"),
                 "hifigan_checkpoint": hg_ckpt.replaceAll(/\\/, "/"),
 
+                "use_amp": trainingAddConfigUseAmp.checked ? "true" : "false",
                 "num_workers": parseInt(trainingAddConfigWorkersInput.value),
                 "batch_size": parseInt(trainingAddConfigBatchSizeInput.value),
                 "epochs_per_checkpoint": parseInt(trainingAddConfigEpochsPerCkptInput.value),
@@ -782,21 +790,9 @@ exportSubmitButton.addEventListener("click", () => {
     if (!fs.existsSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.pt`)) {
         return window.errorModal("A FastPitch1.1 model file was not found in the given checkpoints directory. Have you trained it yet?")
     }
-    if (!fs.existsSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`)) {
-        return window.errorModal("A HiFi-GAN model file was not found in the given checkpoints directory. Have you trained it yet?")
-    }
 
-
-    window.spinnerModal("Exporting...")
-    doFetch(`http://localhost:8002/exportWav`, {
-        method: "Post",
-        body: JSON.stringify({
-            fp_ckpt: `${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.pt`,
-            hg_ckpt: `${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`,
-            out_path: `${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.wav`
-        })
-    }).then(r=>r.text()).then((res) => {
-        console.log("Exporting res:", res)
+    const doTheRest = () => {
+        window.spinnerModal("Exporting...")
 
         // Copy over the resemblyzer embedding data, and export the .json metadata
         const trainingJSON = JSON.parse(fs.readFileSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.json`, "utf8"))
@@ -809,16 +805,38 @@ exportSubmitButton.addEventListener("click", () => {
         fs.copyFileSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.pt`, `${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.pt`)
         fs.copyFileSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`, `${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.hg.pt`)
 
-        if (res.length) {
-            window.appLogger.log(res)
-            window.errorModal(res)
-            window.createModal("error", `There was an issue with exporting the preview audio file:<br><br>${res}`).then(() => {
-                exportModelContainer.click()
+        doFetch(`http://localhost:${window.SERVER_PORT}/exportWav`, {
+            method: "Post",
+            body: JSON.stringify({
+                fp_ckpt: `${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.pt`,
+                hg_ckpt: `${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`,
+                out_path: `${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.wav`
             })
-        } else {
-            window.createModal("error", "Model exported successfully").then(() => {
-                exportModelContainer.click()
-            })
-        }
-    })
+        }).then(r=>r.text()).then((res) => {
+            console.log("Exporting res:", res)
+
+
+            if (res.length) {
+                window.appLogger.log(res)
+                window.errorModal(res)
+                window.createModal("error", `There was an issue with exporting the preview audio file:<br><br>${res}`).then(() => {
+                    exportModelContainer.click()
+                })
+            } else {
+                window.createModal("error", "Model exported successfully").then(() => {
+                    exportModelContainer.click()
+                })
+            }
+        })
+    }
+
+    if (!fs.existsSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`)) {
+        return window.confirmModal("A HiFi-GAN model file was not found in the given checkpoints directory. Have you trained it yet?<br>(You can export anyway, without the audio preview or HiFi-GAN vocoder, but this is not yet ready for publishing, and the quality will be lower)").then(resp => {
+            if (resp) {
+                doTheRest()
+            }
+        })
+    } else {
+        doTheRest()
+    }
 })

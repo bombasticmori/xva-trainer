@@ -88,7 +88,7 @@ async def handleTrainer (models_manager, data, websocket, gpus, resume=False):
 
         gc.collect()
         torch.cuda.empty_cache()
-        if "CUDA out of memory" in str(e):
+        if "CUDA out of memory" in str(e) or "PYTORCH_CUDA_ALLOC_CONF" in str(e):
             trainer.logger.info("CUDA out of memory")
             trainer.print_and_log(f'============= Reducing batch size from {trainer.batch_size} to {trainer.batch_size-5}', save_to_file=trainer.dataset_output)
             data["batch_size"] = data["batch_size"] - 5
@@ -302,7 +302,7 @@ class HiFiTrainer(object):
         input_training_file = f'{self.dataset_output}/metadata.csv'
         input_wavs_dir = f'{self.dataset_output}/wavs'
 
-        training_filelist, not_found, dm = get_dataset_filelist(input_training_file, input_wavs_dir)
+        training_filelist, not_found, dm = get_dataset_filelist(input_training_file, input_wavs_dir, use_embs=self.h.USE_EMB_CONDITIONING)
         self.print_and_log(f'Training items: {int(len(training_filelist)/dm)} | Data multiplier: {dm} | Not found: {not_found} | Total: {len(training_filelist)}', save_to_file=self.dataset_output)
 
         trainset = MelDataset(training_filelist, self.h.segment_size, self.h.n_fft, self.h.num_mels,

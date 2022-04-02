@@ -124,7 +124,7 @@ async def handleTrainer (models_manager, data, websocket, gpus, resume=False):
 
         gc.collect()
         torch.cuda.empty_cache()
-        if "CUDA out of memory" in str(e):
+        if "CUDA out of memory" in str(e) or "PYTORCH_CUDA_ALLOC_CONF" in str(e):
             trainer.print_and_log(f'============= Reducing base batch size from {trainer.batch_size} to {trainer.batch_size-5}', save_to_file=trainer.dataset_output)
             data["batch_size"] = data["batch_size"] - 5
             return await handleTrainer(models_manager, data, websocket, gpus)
@@ -151,6 +151,10 @@ async def handleTrainer (models_manager, data, websocket, gpus, resume=False):
                 # # ======================
                 return await handleTrainer(models_manager, data, websocket, gpus)
         else:
+            try:
+                trainer.logger.info(str(e))
+            except:
+                pass
             raise
 
 
@@ -274,8 +278,7 @@ class FastPitchTrainer(object):
             ckpt_path = self.checkpoint
             self.print_and_log(f'Checkpoint: {ckpt_path}', save_to_file=self.dataset_output)
 
-        if self.amp:
-            self.print_and_log(f'FP16: {"Enabled" if self.amp else "Disabled"}', save_to_file=self.dataset_output)
+        self.print_and_log(f'FP16: {"Enabled" if self.amp else "Disabled"}', save_to_file=self.dataset_output)
 
 
         # Set-up start
@@ -671,7 +674,7 @@ class FastPitchTrainer(object):
 
             # Maybe TODO, make these configurable
             self.learning_rate = 0.1
-            self.amp = True
+            self.amp = data["use_amp"]=="true" if "use_amp" in data.keys() else True
 
             # Fixed
             self.weight_decay = 1e-6
@@ -908,6 +911,8 @@ class FastPitchTrainer(object):
         MIN_EPOCHS = 1
 
         self.graphs_json["stages"][str(self.model.training_stage)]["loss"].append([self.total_iter, self.avg_loss_per_epoch[-1]])
+        with open(f'{self.dataset_output}/graphs.json', "w+") as f:
+            f.write(json.dumps(self.graphs_json))
 
         if len(self.iter_losses):
             avg_iter_losses = np.mean(self.iter_losses)
@@ -920,8 +925,6 @@ class FastPitchTrainer(object):
                     self.writer.add_scalar(f'meta/stage_{self.model.training_stage}_acc_epoch_deltas_avg20', acc_epoch_deltas_avg20, self.total_iter)
 
                     self.graphs_json["stages"][str(self.model.training_stage)]["loss_delta"].append([self.total_iter, acc_epoch_deltas_avg20])
-                    with open(f'{self.dataset_output}/graphs.json', "w+") as f:
-                        f.write(json.dumps(self.graphs_json))
 
                     if len(acc_epoch_deltas)>=max(MIN_EPOCHS, (20 if self.model.training_stage==2 else MIN_EPOCHS)) and acc_epoch_deltas_avg20<=self.target_delta:
 
