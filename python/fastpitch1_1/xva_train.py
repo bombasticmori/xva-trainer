@@ -1123,6 +1123,8 @@ class FastPitchTrainer(object):
 
                         for ai, audiopath in enumerate(x[-1]):
                             out_path = audiopath.split("/")[-1].replace(".wav", ".pt").replace("\\", "/").replace("/wavs/", "/durs_arpabet/" if p_arpabet==1.0 else "/durs_text/")
+                            if not out_path.startswith('/'):
+                                out_path = f'{self.dataset_input}' + ("/durs_arpabet/" if p_arpabet==1.0 else "/durs_text/") + out_path
                             durs = attn_hard_dur[ai].squeeze().cpu().detach().numpy()
                             np.save(out_path.replace(".pt", ".npy"), durs)
                     except:
