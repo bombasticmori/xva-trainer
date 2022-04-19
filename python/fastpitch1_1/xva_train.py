@@ -110,10 +110,14 @@ async def handleTrainer (models_manager, data, websocket, gpus, resume=False):
         trainer.running = False
         raise
     except RuntimeError as e:
+        running = trainer.running
         trainer.running = False
         stageFinished = trainer.force_stage or trainer.model.training_stage - 1
         try:
             del trainer.train_loader
+        except:
+            pass
+        try:
             del trainer.dataloader_iterator
             del trainer.model
             del trainer.criterion
@@ -125,9 +129,21 @@ async def handleTrainer (models_manager, data, websocket, gpus, resume=False):
         gc.collect()
         torch.cuda.empty_cache()
         if "CUDA out of memory" in str(e) or "PYTORCH_CUDA_ALLOC_CONF" in str(e):
-            trainer.print_and_log(f'============= Reducing base batch size from {trainer.batch_size} to {trainer.batch_size-5}', save_to_file=trainer.dataset_output)
-            data["batch_size"] = data["batch_size"] - 5
-            return await handleTrainer(models_manager, data, websocket, gpus)
+            torch.cuda.empty_cache()
+            trainer.print_and_log(f'Out of VRAM')
+            if running:
+                trainer.print_and_log(f'============= Reducing base batch size from {trainer.batch_size} to {trainer.batch_size-3}', save_to_file=trainer.dataset_output)
+                data["batch_size"] = data["batch_size"] - 3
+            del trainer
+            try:
+                del models_manager.models_bank["fastpitch1_1"]
+            except:
+                pass
+            if running:
+                gc.collect()
+                torch.cuda.empty_cache()
+                return await handleTrainer(models_manager, data, websocket, gpus)
+
         elif trainer.JUST_FINISHED_STAGE:
             if trainer.force_stage:
                 trainer.print_and_log(f'Moving to HiFi-GAN...\n', save_to_file=trainer.dataset_output)
@@ -153,6 +169,8 @@ async def handleTrainer (models_manager, data, websocket, gpus, resume=False):
         else:
             try:
                 trainer.logger.info(str(e))
+                del trainer
+                del models_manager.models_bank["fastpitch1_1"]
             except:
                 pass
             raise
@@ -215,7 +233,7 @@ class FastPitchTrainer(object):
             self.print_lr = False
         else:
             time_str = str(datetime.datetime.now().time())
-            time_str = time_str.split(":")[0]+":"+time_str.split(":")[1]
+            time_str = time_str.split(":")[0]+":"+time_str.split(":")[1]+":"+time_str.split(":")[2].split(".")[0]
             self.training_log.append(f'{time_str} | {line}')
             if not self.print_lr:
                 print(f'\n{time_str} | {line}', flush=True)
@@ -438,7 +456,7 @@ class FastPitchTrainer(object):
             pass # TODO
         else:
             self.train_sampler, shuffle = None, True
-        self.train_loader = DataLoader(self.trainset, num_workers=self.workers, shuffle=shuffle, sampler=self.train_sampler, batch_size=self.batch_size, pin_memory=True, persistent_workers=True, drop_last=True, collate_fn=collate_fn)
+        self.train_loader = DataLoader(self.trainset, num_workers=self.workers, shuffle=shuffle, sampler=self.train_sampler, batch_size=self.batch_size, pin_memory=True, persistent_workers=self.workers>0, drop_last=True, collate_fn=collate_fn)
         self.model.train()
 
 
@@ -447,6 +465,8 @@ class FastPitchTrainer(object):
         self.avg_frames_s = []
 
         self.target_delta = self.get_target_delta(num_data_lines)
+        self.target_patience = 3
+        self.target_patience_count = 0
 
         training_stage = self.model.training_stage
         if len(self.gpus)>1:
@@ -467,6 +487,7 @@ class FastPitchTrainer(object):
 
         gc.collect()
         # https://github.com/pytorch/pytorch/issues/1917#issuecomment-433698337
+        self.print_and_log(f'Starting training.')
         self.dataloader_iterator = iter(self.train_loader)
         self.start_new_epoch()
 
@@ -492,7 +513,7 @@ class FastPitchTrainer(object):
 
                 collate_fn = self.TTSCollate()
                 collate_fn.training_stage = -1
-                pitchCalcDataloader = DataLoader(pitchCalcDataset, num_workers=1, shuffle=False, sampler=None, batch_size=1, pin_memory=True, persistent_workers=True, drop_last=True, collate_fn=collate_fn)
+                pitchCalcDataloader = DataLoader(pitchCalcDataset, num_workers=1, shuffle=False, sampler=None, batch_size=1, pin_memory=True, persistent_workers=False, drop_last=True, collate_fn=collate_fn)
 
                 pitch_vals = []
 
@@ -586,7 +607,7 @@ class FastPitchTrainer(object):
             if num_data_lines<500:
                 target_delta = 4e-4
 
-            target_delta = target_delta * 0.75
+            target_delta = target_delta #* 0.75
 
             for module in [self.model.duration_predictor, self.model.decoder, self.model.pitch_predictor, self.model.pitch_emb, self.model.energy_predictor, self.model.proj]:
                 for param in module.parameters():
@@ -603,6 +624,8 @@ class FastPitchTrainer(object):
 
             if num_data_lines<500:
                 target_delta = 4e-3
+
+            target_delta = target_delta * 1.5
 
             for module in [self.model.attention, self.model.decoder, self.model.pitch_predictor, self.model.pitch_emb, self.model.energy_predictor, self.model.proj]:
                 for param in module.parameters():
@@ -624,24 +647,26 @@ class FastPitchTrainer(object):
                     target_delta = 1e-3
 
 
-            target_delta = target_delta * 2
+            target_delta = target_delta * 2.5
 
             for module in [self.model.attention, self.model.duration_predictor]:
                 for param in module.parameters():
                     param.requires_grad = False
 
         elif self.model.training_stage==4:
-            target_delta = 2e-4
+            target_delta = 25e-5 # 2e-4
             if num_data_lines>4000:
-                target_delta = 3e-5
+                target_delta = 35e-6 # 3e-5
             elif num_data_lines>2000:
-                target_delta = 8e-5
+                target_delta = 1e-4 # 8e-5
 
             if num_data_lines<500:
                 if num_data_lines<250:
-                    target_delta = 1e-3
+                    target_delta = 15e-4 # 1e-3
                 else:
-                    target_delta = 4e-4
+                    target_delta = 45e-5 # 4e-4
+
+            target_delta = target_delta * 1.5
 
             for module in [self.model.attention, self.model.duration_predictor, self.model.pitch_predictor, self.model.pitch_emb, self.model.energy_predictor]:
                 for param in module.parameters():
@@ -862,7 +887,7 @@ class FastPitchTrainer(object):
             else:
                 avg_losses_print = ""
 
-            print_line = f'Stage: {self.model.training_stage} | Epoch: {self.epoch} | iter: {(self.total_iter+1)%self.num_iters}/{self.num_iters} -> {self.total_iter} | loss: {int(self.iter_loss*10000)/10000} | frames/s {int(self.iter_num_frames / self.iter_time)}{avg_losses_print} | Target: {self.target_delta}    '
+            print_line = f'Stage: {self.model.training_stage} | Epoch: {self.epoch} | iter: {(self.total_iter+1)%self.num_iters}/{self.num_iters} -> {self.total_iter} | loss: {int(self.iter_loss*10000)/10000} | frames/s {int(self.iter_num_frames / self.iter_time)}{avg_losses_print} | Target: {str(self.target_delta).split("00000")[0]}    '
             self.training_log_live_line = print_line
             self.print_and_log(save_to_file=self.dataset_output)
 
@@ -925,22 +950,28 @@ class FastPitchTrainer(object):
                     self.writer.add_scalar(f'meta/stage_{self.model.training_stage}_acc_epoch_deltas_avg20', acc_epoch_deltas_avg20, self.total_iter)
 
                     self.graphs_json["stages"][str(self.model.training_stage)]["loss_delta"].append([self.total_iter, acc_epoch_deltas_avg20])
+                    with open(f'{self.dataset_output}/graphs.json', "w+") as f:
+                        f.write(json.dumps(self.graphs_json))
 
                     if len(acc_epoch_deltas)>=max(MIN_EPOCHS, (20 if self.model.training_stage==2 else MIN_EPOCHS)) and acc_epoch_deltas_avg20<=self.target_delta:
+                        self.target_patience_count += 1
+                        if self.target_patience_count>=self.target_patience:
+                            fpath_stage = os.path.join(self.dataset_output, f"Stage_{self.model.training_stage}_DONE_FastPitch_checkpoint_{self.epoch}_{self.total_iter}.pt")
 
-                        fpath_stage = os.path.join(self.dataset_output, f"Stage_{self.model.training_stage}_DONE_FastPitch_checkpoint_{self.epoch}_{self.total_iter}.pt")
+                            if self.model.training_stage==4:
+                                self.END_OF_TRAINING = True
 
-                        if self.model.training_stage==4:
-                            self.END_OF_TRAINING = True
+                            self.JUST_FINISHED_STAGE = True
+                            self.logger.info("[Trainer] JUST_FINISHED_STAGE...")
+                            self.model.training_stage += 1
 
-                        self.JUST_FINISHED_STAGE = True
-                        self.logger.info("[Trainer] JUST_FINISHED_STAGE...")
-                        self.model.training_stage += 1
+                            self.avg_loss_per_epoch = []
+                            self.save_checkpoint(force_save=True, frames_s=np.mean(self.avg_frames_s), total_iter=(self.total_iter if self.model.training_stage==4 else self.start_iterations), avg_loss=avg_loss, loss_delta=acc_epoch_deltas_avg20, avg_loss_per_epoch=self.avg_loss_per_epoch, fpath=fpath)
+                            self.save_checkpoint(force_save=True, frames_s=np.mean(self.avg_frames_s), total_iter=(self.total_iter if self.model.training_stage==4 else self.start_iterations), avg_loss=avg_loss, loss_delta=acc_epoch_deltas_avg20, avg_loss_per_epoch=self.avg_loss_per_epoch, fpath=fpath_stage, doPrintLog=False)
 
-                        self.avg_loss_per_epoch = []
-                        self.save_checkpoint(force_save=True, frames_s=np.mean(self.avg_frames_s), total_iter=(self.total_iter if self.model.training_stage==4 else self.start_iterations), avg_loss=avg_loss, loss_delta=acc_epoch_deltas_avg20, avg_loss_per_epoch=self.avg_loss_per_epoch, fpath=fpath)
-                        self.save_checkpoint(force_save=True, frames_s=np.mean(self.avg_frames_s), total_iter=(self.total_iter if self.model.training_stage==4 else self.start_iterations), avg_loss=avg_loss, loss_delta=acc_epoch_deltas_avg20, avg_loss_per_epoch=self.avg_loss_per_epoch, fpath=fpath_stage, doPrintLog=False)
-                        raise
+                            raise
+                    else:
+                        self.target_patience_count = 0
 
             self.last_loss = avg_iter_losses
 
@@ -1104,7 +1135,7 @@ class FastPitchTrainer(object):
             trainset = self.TTSDataset(dataset_path=self.dataset_input, audiopaths_and_text=self.dataset_input+"/metadata.csv", text_cleaners=text_cleaners, n_mel_channels=80, dm=-1, use_file_caching=True, pitch_mean=pitch_mean, pitch_std=pitch_std, training_stage=1, p_arpabet=p_arpabet, max_wav_value=32768.0, sampling_rate=22050, filter_length=1024, hop_length=256, win_length=1024, mel_fmin=0, mel_fmax=8000, betabinomial_online_dir=None, pitch_online_dir=None, cmudict=self.cmudict, pitch_online_method="pyin")
             collate_fn = self.TTSCollate()
             collate_fn.training_stage = 1
-            dataloader = DataLoader(trainset, num_workers=1, shuffle=False, sampler=None, batch_size=1, pin_memory=True, persistent_workers=True, drop_last=True, collate_fn=collate_fn)
+            dataloader = DataLoader(trainset, num_workers=1, shuffle=False, sampler=None, batch_size=1, pin_memory=True, persistent_workers=False, drop_last=True, collate_fn=collate_fn)
 
             os.makedirs(f'{self.dataset_input}/durs_arpabet', exist_ok=True)
             os.makedirs(f'{self.dataset_input}/durs_text', exist_ok=True)
@@ -1161,7 +1192,7 @@ class FastPitch1_1(object):
 
     def init_model (self, symbols_alphabet):
         self.symbols_alphabet = symbols_alphabet
-        self.model = FastPitch()
+        self.model = FastPitch(logger=self.logger)
         self.model.eval()
         self.model.device = self.device
 

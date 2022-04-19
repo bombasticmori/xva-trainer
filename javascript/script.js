@@ -1,5 +1,5 @@
 "use strict"
-window.appVersion = "1.0.4"
+window.appVersion = "1.0.6"
 app_version.innerHTML = "v"+window.appVersion
 window.PRODUCTION = module.filename.includes("resources")
 const path = PRODUCTION ? `${__dirname.replace(/\\/g,"/")}` : `${__dirname.replace(/\\/g,"/")}`
@@ -26,7 +26,7 @@ const {xVAAppLogger} = require("./javascript/appLogger.js")
 window.appLogger = new xVAAppLogger(`./app.log`, window.appVersion)
 window.appLogger.log(`Ports | Server: ${window.SERVER_PORT} | WebSocket: ${window.WEBSOCKET_PORT}`)
 process.on(`uncaughtException`, data => window.appLogger.log(`uncaughtException: ${data}`))
-window.onerror = (err, url, lineNum) => window.appLogger.log(`onerror: ${err}`)
+window.onerror = (err, url, lineNum) => window.appLogger.log(`[line: ${lineNum}] onerror: ${err}`)
 require("./javascript/util.js")
 require("./javascript/settingsMenu.js")
 require("./javascript/tools.js")
@@ -34,7 +34,21 @@ const execFile = require('child_process').execFile
 const spawn = require("child_process").spawn
 
 window.hasCUDA = false
-window.spinnerModal("Waiting for the WebSocket to connect...")
+if (!window.ws || !window.ws.readyState) {
+    window.spinnerModal("Waiting for the WebSocket to connect...")
+    const checkIsUp = () => {
+        setTimeout(() => {
+            console.log(window.ws)
+            // console.log(window.ws.readyState)
+            if (window.ws && window.ws.readyState) {
+                window.closeModal()
+            } else {
+                checkIsUp()
+            }
+        }, 500)
+    }
+    checkIsUp()
+}
 smi((err, data) => {
     if (!data || !data.nvidia_smi_log.cuda_version) {
         return window.errorModal(`CUDA installation not detected. This is required (along with an NVIDIA GPU) for most things to work. Please install it from the NVIDIA website. You can verify its installation by running "nvcc --version" on the command-line.<br>You can switch to a CPU-only installation in the settings, to use the tools, but the training is still GPU only.`)
@@ -151,6 +165,7 @@ const initWebSocketInterval = setInterval(initWebSocket, 1000)
 
 
 window.datasets = {}
+window.filteredRows = undefined
 window.appState = {
     currentDataset: undefined,
     recordFocus: undefined,
@@ -202,6 +217,8 @@ window.refreshDatasets = () => {
             const button = createElem("div.voiceType", dataset)
 
             button.addEventListener("click", event => {
+
+                window.appState.skipRefreshing = false
 
                 Array.from(document.querySelectorAll(".mainPageButton")).forEach(button => button.disabled = false)
 
@@ -265,6 +282,30 @@ window.refreshDatasets = () => {
                     addmissingmeta_btn_container.style.display = "none"
                 }
 
+                // Check for duplicates
+                const duplicateLines = []
+                const duplicateFileNames = new Set()
+                const existingFilesReferenced = new Set()
+                records.forEach(record => {
+                    if (existingFilesReferenced.has(record.fileName)) {
+                        duplicateFileNames.add(record.fileName)
+                    }
+                    existingFilesReferenced.add(record.fileName)
+                })
+                records.forEach(record => {
+                    if (duplicateFileNames.has(record.fileName)) {
+                        duplicateLines.push(record)
+                    }
+                })
+
+                if (duplicateLines.length) {
+                    totalDataDuplicates.innerHTML = duplicateLines.length
+                    uniqueDataDuplicates.innerHTML = duplicateFileNames.size
+                    datasetDuplicatesWarning.style.display = "flex"
+                } else {
+                    datasetDuplicatesWarning.style.display = "none"
+                }
+
             })
             buttons.push(button)
 
@@ -319,8 +360,8 @@ window.setRecordFocus = ri => {
         Array.from(batchRecordsContainer.children[ri%window.userSettings.paginationSize].children).forEach(c => {
             c.style.color = "black"
         })
-        textInput.value = window.datasets[window.appState.currentDataset].metadata[ri][0].text
-        outFileNameInput.value = window.datasets[window.appState.currentDataset].metadata[ri][0].fileName
+        textInput.value = window.filteredRows[ri][0].text
+        outFileNameInput.value = window.filteredRows[ri][0].fileName
     } else {
         textInput.value = ""
         outFileNameInput.value = ""
@@ -376,7 +417,12 @@ btn_save.addEventListener("click", () => {
             window.datasets[window.appState.currentDataset].metadata[window.appState.recordFocus][1].children[3].innerHTML = textInput.value.replace(/\|/g,"").replace(/\n/g,"").replace(/\r/g,"").trim()
 
             window.saveDatasetToFile(window.appState.currentDataset)
-            setRecordFocus()
+
+            if (window.appState.recordFocus+1<batchRecordsContainer.childElementCount) {
+                setRecordFocus(window.appState.recordFocus+1)
+            } else {
+                setRecordFocus()
+            }
         }
 
         // Copy over the recorded file, if one exists
@@ -467,15 +513,17 @@ btn_play.addEventListener("click", () => {
 })
 btn_delete.addEventListener("click", () => {
     if (window.appState.recordFocus!=undefined) {
-        const recordFocus = window.appState.recordFocus
-        const text = window.datasets[window.appState.currentDataset].metadata[recordFocus][0].text
+
+        const text = window.filteredRows[window.appState.recordFocus][0].text
+        const recordFocusIndex = window.datasets[window.appState.currentDataset].metadata.findIndex(record => record[3]==window.filteredRows[window.appState.recordFocus][3])
+
         confirmModal(`Are you sure you'd like to delete this line?<br><br><i>${text}</i>`).then(confirmation => {
             if (confirmation) {
-                const fileName = window.datasets[window.appState.currentDataset].metadata[recordFocus][0].fileName
-                delete window.datasets[window.appState.currentDataset].metadata[recordFocus]
+                const fileName = window.datasets[window.appState.currentDataset].metadata[recordFocusIndex][0].fileName
+                delete window.datasets[window.appState.currentDataset].metadata[recordFocusIndex]
                 window.saveDatasetToFile(window.appState.currentDataset)
 
-                if (fs.existsSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset}/wavs/${fileName}`)) {
+                if (fileNameSearch.value!="%duplicates%" && fs.existsSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset}/wavs/${fileName}`)) {
                     fs.unlinkSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset}/wavs/${fileName}`)
                 }
             }
@@ -700,11 +748,30 @@ window.searchDatasetRows = rows => {
     const transcriptQuery = transcriptSearch.value.trim().toLowerCase()
 
     const filteredRows = []
-    rows.forEach(row => {
-        if (row[0].fileName.toLowerCase().includes(fileNameQuery) && row[0].text.toLowerCase().includes(transcriptQuery)) {
-            filteredRows.push(row)
-        }
-    })
+
+    if (fileNameQuery=="%duplicates%") {
+        const duplicateLines = new Set()
+        const existingFilesReferenced = new Set()
+        rows.forEach(record => {
+            if (existingFilesReferenced.has(record[0].fileName)) {
+                duplicateLines.add(record[0].fileName)
+            }
+            existingFilesReferenced.add(record[0].fileName)
+        })
+        rows.forEach(record => {
+            if (duplicateLines.has(record[0].fileName)) {
+                record[2] = filteredRows.length
+                filteredRows.push(record)
+            }
+        })
+    } else {
+        rows.forEach(row => {
+            if (row[0].fileName.toLowerCase().includes(fileNameQuery) && row[0].text.toLowerCase().includes(transcriptQuery)) {
+                row[2] = filteredRows.length
+                filteredRows.push(row)
+            }
+        })
+    }
     return filteredRows
 }
 fileNameSearch.addEventListener("keyup", () => {
@@ -722,7 +789,9 @@ window.refreshRecordsList = (dataset) => {
     batchRecordsContainer.innerHTML = ""
 
     const filteredRows = window.searchDatasetRows(window.datasets[window.appState.currentDataset].metadata)
-    const numPages = Math.ceil(filteredRows.length/window.userSettings.paginationSize)
+    window.filteredRows = filteredRows
+    const numPages = Math.ceil(window.filteredRows.length/window.userSettings.paginationSize)
+    ofTotalPages.innerHTML = `of ${numPages}`
 
     doFetch(`http://localhost:${window.SERVER_PORT}/getAudioLengthOfDir`, {
         method: "Post",
@@ -768,8 +837,10 @@ window.refreshRecordsList = (dataset) => {
             }
         })
 
-
         recordAndElem[1].children[0].innerHTML = (ri+1)
+        recordAndElem[1].addEventListener("click", event => {
+            setRecordFocus(filteredRows[ri][2])
+        })
         batchRecordsContainer.appendChild(recordAndElem[1])
     }
 }
@@ -791,8 +862,10 @@ const populateRecordsList = (dataset, records, additive=false) => {
         const rGameElem = createElem("div.rowItem", "")
 
         record.fileName = record.fileName==undefined ? getNextFileName(dataset)+".wav" : record.fileName
-        const rTextElem = createElem("div.rowItem", record.text)
         const rOutPathElem = createElem("div.rowItem", record.fileName)
+        rOutPathElem.title = record.fileName
+        const rTextElem = createElem("div.rowItem", record.text)
+        rTextElem.title = record.text
 
 
         row.appendChild(rNumElem)
@@ -803,11 +876,6 @@ const populateRecordsList = (dataset, records, additive=false) => {
         row.appendChild(rGameElem)
         row.appendChild(rOutPathElem)
         row.appendChild(rTextElem)
-
-        row.addEventListener("click", event => {
-            setRecordFocus(ri)
-        })
-
 
         const wer_elem = createElem("div.wer")
         if (record.score) {
@@ -826,6 +894,48 @@ batch_main.addEventListener("dragenter", event => uploadBatchCSVs("dragenter", e
 batch_main.addEventListener("dragleave", event => uploadBatchCSVs("dragleave", event), false)
 batch_main.addEventListener("dragover", event => uploadBatchCSVs("dragover", event), false)
 batch_main.addEventListener("drop", event => uploadBatchCSVs("drop", event), false)
+
+paginationPrev.addEventListener("click", () => {
+    pageNum.value = Math.max(1, parseInt(pageNum.value)-1)
+    window.appState.paginationIndex = pageNum.value-1
+    if (window.appState.recordFocus!=undefined) {
+        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
+    }
+    window.appState.recordFocus = undefined
+    refreshRecordsList(window.appState.currentDataset)
+})
+paginationNext.addEventListener("click", () => {
+    const numPages = Math.ceil(window.filteredRows.length/window.userSettings.paginationSize)
+    pageNum.value = Math.min(parseInt(pageNum.value)+1, numPages)
+    if (window.appState.recordFocus!=undefined) {
+        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
+    }
+    window.appState.recordFocus = undefined
+    window.appState.paginationIndex = pageNum.value-1
+    refreshRecordsList(window.appState.currentDataset)
+})
+pageNum.addEventListener("change", () => {
+    const numPages = Math.ceil(window.filteredRows.length/window.userSettings.paginationSize)
+    pageNum.value = Math.max(1, Math.min(parseInt(pageNum.value), numPages))
+    if (window.appState.recordFocus!=undefined) {
+        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
+    }
+    window.appState.recordFocus = undefined
+    window.appState.paginationIndex = pageNum.value-1
+    refreshRecordsList(window.appState.currentDataset)
+})
+setting_paginationSize.addEventListener("change", () => {
+    const numPages = Math.ceil(window.filteredRows.length/window.userSettings.paginationSize)
+    pageNum.value = Math.max(1, Math.min(parseInt(pageNum.value), numPages))
+    window.appState.paginationIndex = pageNum.value-1
+    ofTotalPages.innerHTML = `of ${numPages}`
+    if (window.appState.recordFocus!=undefined) {
+        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
+    }
+    window.appState.recordFocus = undefined
+
+    refreshRecordsList(window.appState.currentDataset)
+})
 // =================
 
 
@@ -1069,47 +1179,7 @@ if (fs.existsSync(`${window.path}/recorded_noise.wav`)) {
 
 
 
-paginationPrev.addEventListener("click", () => {
-    pageNum.value = Math.max(1, parseInt(pageNum.value)-1)
-    window.appState.paginationIndex = pageNum.value-1
-    if (window.appState.recordFocus!=undefined) {
-        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
-    }
-    window.appState.recordFocus = undefined
-    refreshRecordsList(window.appState.currentDataset)
-})
-paginationNext.addEventListener("click", () => {
-    const numPages = Math.ceil(window.datasets[window.appState.currentDataset].metadata.length/window.userSettings.paginationSize)
-    pageNum.value = Math.min(parseInt(pageNum.value)+1, numPages)
-    if (window.appState.recordFocus!=undefined) {
-        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
-    }
-    window.appState.recordFocus = undefined
-    window.appState.paginationIndex = pageNum.value-1
-    refreshRecordsList(window.appState.currentDataset)
-})
-pageNum.addEventListener("change", () => {
-    const numPages = Math.ceil(window.datasets[window.appState.currentDataset].metadata.length/window.userSettings.paginationSize)
-    pageNum.value = Math.max(1, Math.min(parseInt(pageNum.value), numPages))
-    if (window.appState.recordFocus!=undefined) {
-        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
-    }
-    window.appState.recordFocus = undefined
-    window.appState.paginationIndex = pageNum.value-1
-    refreshRecordsList(window.appState.currentDataset)
-})
-setting_paginationSize.addEventListener("change", () => {
-    const numPages = Math.ceil(window.datasets[window.appState.currentDataset].metadata.length/window.userSettings.paginationSize)
-    pageNum.value = Math.max(1, Math.min(parseInt(pageNum.value), numPages))
-    window.appState.paginationIndex = pageNum.value-1
-    ofTotalPages.innerHTML = `of ${numPages}`
-    if (window.appState.recordFocus!=undefined) {
-        window.clearRecordFocus(window.appState.recordFocus%window.userSettings.paginationSize)
-    }
-    window.appState.recordFocus = undefined
 
-    refreshRecordsList(window.appState.currentDataset)
-})
 
 
 
@@ -1151,7 +1221,7 @@ const initDatasetMeta = (callback) => {
             callback()
         }
 
-        fs.writeFileSync(`${window.userSettings.datasetsPath}/${composedVoiceId.innerHTML}/dataset_metadata.json`, JSON.stringify({
+        fs.writeFileSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset||composedVoiceId.innerHTML}/dataset_metadata.json`, JSON.stringify({
             "version": "2.0",
             "modelVersion": parseFloat(datasetMeta_modelVersion.value).toFixed(1),
             "modelType": "FastPitch1.1",
@@ -1182,12 +1252,55 @@ window.setupModal(btn_preprocessAudioButton, preprocessAudioContainer)
 window.setupModal(btn_preprocessTextButton, preprocessTextContainer)
 window.setupModal(btn_cleanAudioText, cleanAudioTextContainer)
 window.setupModal(btn_checkTextQualityBtn, checkTextQualityContainer)
+window.setupModal(datasetDuplicatesWarning, duplicateDatasetContainer)
+
+btnShowAllDataDuplicates.addEventListener("click", () => {
+    fileNameSearch.value = "%duplicates%"
+    window.searchDatasetRows(window.datasets[window.appState.currentDataset].metadata)
+    duplicateDatasetContainer.click()
+    window.refreshRecordsList()
+})
+btnRemoveAllDataDuplicates.addEventListener("click", () => {
+
+    const duplicateLines = []
+    const duplicateFileNames = new Set()
+    const existingFilesReferenced = new Set()
+    window.datasets[window.appState.currentDataset].metadata.forEach(record => {
+        if (existingFilesReferenced.has(record[0].fileName)) {
+            duplicateFileNames.add(record[0].fileName)
+        }
+        existingFilesReferenced.add(record[0].fileName)
+    })
+    window.datasets[window.appState.currentDataset].metadata.forEach(record => {
+        if (duplicateFileNames.has(record[0].fileName)) {
+            duplicateLines.push(record)
+        }
+    })
+
+    window.confirmModal(`Are you sure you'd like to delete ${duplicateLines.length} records from your dataset?`).then(resp => {
+        if (resp) {
+            for (let i=0; i<window.datasets[window.appState.currentDataset].metadata.length; i++) {
+                if (duplicateFileNames.has(window.datasets[window.appState.currentDataset].metadata[i][0].fileName)) {
+                    const fileName = window.datasets[window.appState.currentDataset].metadata[i][0].fileName
+                    if (fs.existsSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset}/wavs/${fileName}`)) {
+                        fs.unlinkSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset}/wavs/${fileName}`)
+                    }
+                    window.datasets[window.appState.currentDataset].metadata[i] = undefined
+                }
+            }
+
+            window.datasets[window.appState.currentDataset].metadata = window.datasets[window.appState.currentDataset].metadata.filter(item => item!=undefined)
+            window.saveDatasetToFile(window.appState.currentDataset)
+            duplicateDatasetContainer.click()
+        }
+    })
+})
 
 window.setupModal(btn_editdatasetmeta, datasetMetaContainer, () => {
     datasetMetaTitle.innerHTML = `Edit meta for: ${window.appState.currentDataset}`
     fixedFolderName = window.appState.currentDataset
     const datasetMeta = JSON.parse(fs.readFileSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset}/dataset_metadata.json`, "utf8"))
-    console.log("datasetMeta", datasetMeta)
+    const voiceId = datasetMeta.games[0].voiceId || fixedFolderName
 
     datasetMeta_voiceName.value = datasetMeta.games[0].voiceName
     datasetMeta_gameId.value = datasetMeta.games[0].gameId
@@ -1198,15 +1311,15 @@ window.setupModal(btn_editdatasetmeta, datasetMetaContainer, () => {
     datasetMeta_gender_male.checked = datasetMeta.games[0].gender=="male"
     datasetMeta_gender_female.checked = datasetMeta.games[0].gender=="female"
     datasetMeta_gender_other.checked = datasetMeta.games[0].gender=="other"
-    composedVoiceId.innerHTML = fixedFolderName
+    composedVoiceId.innerHTML = voiceId
     datasetMeta_author.value = datasetMeta.author
     datasetMeta_license.value = datasetMeta.license || ""
 
     initDatasetMeta(() => {
-        composedVoiceId.innerHTML = fixedFolderName
+        composedVoiceId.innerHTML = voiceId
     })
-    composedVoiceId.innerHTML = window.appState.currentDataset
-    datasetMeta_voiceId.value = window.appState.currentDataset
+    composedVoiceId.innerHTML = voiceId
+    datasetMeta_voiceId.value = voiceId
 })
 
 
@@ -1244,12 +1357,9 @@ datasetMeta_voiceName.addEventListener("keyup", () => {
 })
 
 datasetMeta_voiceId.addEventListener("keyup", () => {
-    if (fixedFolderName) {
-        return
-    }
     voiceIDInputChanged = true
     if (datasetMeta_voiceId.value.trim().length && datasetMeta_gameIdCode.value.trim().length) {
-        composedVoiceId.innerHTML = `${datasetMeta_gameIdCode.value.trim().toLowerCase()}_${datasetMeta_voiceId.value.trim().toLowerCase().replace(/\s/g, "_")}`
+        composedVoiceId.innerHTML = `${datasetMeta_voiceId.value.trim().toLowerCase()}`
     }
 })
 datasetMeta_gameIdCode.addEventListener("keyup", () => {
@@ -1378,7 +1488,10 @@ window.setupModal(patreonIcon, patreonContainer, () => {
 window.setupModal(btn_trainmodel, trainContainer, () => {
     if (window.appState.currentDataset) {
         setTimeout(() => {
-            window.showConfigMenu(`${window.userSettings.datasetsPath.replaceAll(/\\/, "/")}/${window.appState.currentDataset}`)
+            const queueItem = window.training_state.datasetsQueue.filter(item => item.dataset_path.includes(window.appState.currentDataset))
+            if (!queueItem.length) {
+                window.showConfigMenu(`${window.userSettings.datasetsPath.replaceAll(/\\/, "/")}/${window.appState.currentDataset}`)
+            }
         }, 500)
     }
 })

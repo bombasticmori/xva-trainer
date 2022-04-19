@@ -182,12 +182,16 @@ window.updateSystemGraphs = () => {
 
 
             // Disk
-            const diskUsage = getDiskTimePercent(disk_drive_select.selectedOptions[0].innerText)
-            disk_chart_object.data.datasets[0].data.push(parseInt(diskUsage))
-            if (disk_chart_object.data.datasets[0].data.length>60) {
-                disk_chart_object.data.datasets[0].data.splice(0,1)
+            try {
+                const diskUsage = getDiskTimePercent(disk_drive_select.selectedOptions[0].innerText)
+                disk_chart_object.data.datasets[0].data.push(parseInt(diskUsage))
+                if (disk_chart_object.data.datasets[0].data.length>60) {
+                    disk_chart_object.data.datasets[0].data.splice(0,1)
+                }
+                disk_chart_object.data.datasets[0].label = `${disk_chart_object.data.datasets[0].label.split(" ")[0]} (${disk_drive_select.selectedOptions[0].innerText}) ${(diskUsage).toFixed(2)}%`
+            } catch (e) {
+
             }
-            disk_chart_object.data.datasets[0].label = `${disk_chart_object.data.datasets[0].label.split(" ")[0]} (${disk_drive_select.selectedOptions[0].innerText}) ${(diskUsage).toFixed(2)}%`
 
 
             cpu_chart_object.update()
@@ -394,9 +398,14 @@ window.updateTrainingGraphs = () => {
         try {
             const graphsJson = JSON.parse(jsonString)
             const stageData = graphsJson.stages[window.training_state.stage_viewed]
+
+            if (window.graphs_only_latest) {
+                stageData.loss = stageData.loss.slice(stageData.loss.length-window.graphs_only_latest, stageData.loss.length)
+                stageData.loss_delta = stageData.loss_delta.slice(stageData.loss_delta.length-window.graphs_only_latest, stageData.loss_delta.length)
+            }
+
             window.updateTrainingGraphValues(stageData.loss, window.loss_chart_object)
             window.updateTrainingGraphValues(stageData.loss_delta, window.loss_delta_chart_object)
-
 
 
             // window.loss_delta_chart_object.data.datasets[1].data = stageData.loss_delta.map((_,i)=>0.04)
@@ -408,11 +417,29 @@ window.updateTrainingGraphs = () => {
 
 
         } catch (e) {
-            // console.log(e)
+            console.log(e)
             // console.log(`${datasetConfig.output_path}/graphs.json`)
         }
     }
 }
+graphs_only_latest_chbx.addEventListener("click", () => {
+    window.graphs_only_latest = graphs_only_latest_chbx.checked ? parseInt(graphs_only_latest_val.value) : undefined
+    localStorage.setItem("graphs_only_latest", window.graphs_only_latest)
+    window.updateTrainingGraphs()
+})
+graphs_only_latest_val.addEventListener("keyup", () => {
+    window.graphs_only_latest = graphs_only_latest_chbx.checked ? parseInt(graphs_only_latest_val.value) : undefined
+    localStorage.setItem("graphs_only_latest", window.graphs_only_latest)
+    window.updateTrainingGraphs()
+})
+
+window.graphs_only_latest = localStorage.getItem("graphs_only_latest")
+if (window.graphs_only_latest) {
+    graphs_only_latest_chbx.checked = true
+    graphs_only_latest_val.value = parseInt(window.graphs_only_latest)
+    window.graphs_only_latest = parseInt(window.graphs_only_latest)
+}
+
 
 
 const startTrackingFolder = (dataset_path, output_path) => {
@@ -772,9 +799,24 @@ btn_exportmodel.addEventListener("click", () => {
         return window.errorModal("Please first add the dataset metadata")
     }
 
+    // Pre-fill with the checkpoints dir, if the dataset is already in the training queue
+    const queueItem = window.training_state.datasetsQueue.filter(item => item.dataset_path.includes(window.appState.currentDataset))
+    if (queueItem.length) {
+        modelExport_trainningDir.value = queueItem[0].output_path+"/"+queueItem[0].dataset_path.split("/").reverse()[0]
+    }
+    const cachedOutPath = localStorage.getItem("modelExport_outputDir")
+    if (cachedOutPath) {
+        modelExport_outputDir.value = cachedOutPath
+    }
+
     window._exportModelModalButton.click()
 })
+modelExport_outputDir.addEventListener("keyup", () => {
+    localStorage.setItem("modelExport_outputDir", modelExport_outputDir.value.replaceAll(/\\/g, "/"))
+
+})
 exportSubmitButton.addEventListener("click", () => {
+
     if (!modelExport_trainningDir.value) {
         return window.errorModal("Please enter the output folder used during training, where all the checkpoints and intermediate files are")
     }
@@ -787,34 +829,40 @@ exportSubmitButton.addEventListener("click", () => {
     if (!fs.existsSync(modelExport_outputDir.value)) {
         return window.errorModal("The export path was not found. Make sure you specify it from the drive letter. Eg C:/...")
     }
-    if (!fs.existsSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.pt`)) {
-        return window.errorModal("A FastPitch1.1 model file was not found in the given checkpoints directory. Have you trained it yet?")
+    let ckptFileFolder = `${modelExport_trainningDir.value.trim()}`
+    if (!fs.existsSync(`${ckptFileFolder}/${window.appState.currentDataset}.pt`)) {
+        if (fs.existsSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}/${window.appState.currentDataset}.pt`)) {
+            ckptFileFolder = `${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}`
+        } else {
+            return window.errorModal("A FastPitch1.1 model file was not found in the given checkpoints directory. Have you trained it yet?")
+        }
     }
 
     const doTheRest = () => {
         window.spinnerModal("Exporting...")
 
         // Copy over the resemblyzer embedding data, and export the .json metadata
-        const trainingJSON = JSON.parse(fs.readFileSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.json`, "utf8"))
+        const trainingJSON = JSON.parse(fs.readFileSync(`${ckptFileFolder}/${window.appState.currentDataset}.json`, "utf8"))
         const metadataJSON = JSON.parse(fs.readFileSync(`${window.userSettings.datasetsPath}/${window.appState.currentDataset}/dataset_metadata.json`, "utf8"))
+        const voiceId = metadataJSON.games[0].voiceId
+
         metadataJSON.games[0].resemblyzer = trainingJSON.games[0].resemblyzer
-        metadataJSON.games[0].voiceId = window.appState.currentDataset
-        fs.writeFileSync(`${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.json`, JSON.stringify(metadataJSON, null, 4))
+        metadataJSON.games[0].voiceId = voiceId//window.appState.currentDataset
+        fs.writeFileSync(`${modelExport_outputDir.value.trim()}/${voiceId}.json`, JSON.stringify(metadataJSON, null, 4))
 
         // Copy over the model files
-        fs.copyFileSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.pt`, `${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.pt`)
-        fs.copyFileSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`, `${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.hg.pt`)
+        fs.copyFileSync(`${ckptFileFolder}/${window.appState.currentDataset}.pt`, `${modelExport_outputDir.value.trim()}/${voiceId}.pt`)
+        fs.copyFileSync(`${ckptFileFolder}/${window.appState.currentDataset}.hg.pt`, `${modelExport_outputDir.value.trim()}/${voiceId}.hg.pt`)
 
         doFetch(`http://localhost:${window.SERVER_PORT}/exportWav`, {
             method: "Post",
             body: JSON.stringify({
-                fp_ckpt: `${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.pt`,
-                hg_ckpt: `${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`,
-                out_path: `${modelExport_outputDir.value.trim()}/${window.appState.currentDataset}.wav`
+                fp_ckpt: `${ckptFileFolder}/${window.appState.currentDataset}.pt`,
+                hg_ckpt: `${ckptFileFolder}/${window.appState.currentDataset}.hg.pt`,
+                out_path: `${modelExport_outputDir.value.trim()}/${voiceId}.wav`
             })
         }).then(r=>r.text()).then((res) => {
             console.log("Exporting res:", res)
-
 
             if (res.length) {
                 window.appLogger.log(res)
@@ -830,7 +878,7 @@ exportSubmitButton.addEventListener("click", () => {
         })
     }
 
-    if (!fs.existsSync(`${modelExport_trainningDir.value.trim()}/${window.appState.currentDataset}.hg.pt`)) {
+    if (!fs.existsSync(`${ckptFileFolder}/${window.appState.currentDataset}.hg.pt`)) {
         return window.confirmModal("A HiFi-GAN model file was not found in the given checkpoints directory. Have you trained it yet?<br>(You can export anyway, without the audio preview or HiFi-GAN vocoder, but this is not yet ready for publishing, and the quality will be lower)").then(resp => {
             if (resp) {
                 doTheRest()
